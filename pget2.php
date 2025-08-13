@@ -7,16 +7,19 @@ $param_list = [
     '--directory-prefix=C:\\workspace\\wwwcrawler',
     '--reject-regex=\?|#|&|(\.rar)|(\.zip)|(\.epub)|(\.txt)|(\.pdf)',
     '--wait=5',
-    '--max-threads=20',
+    '--max-threads=10',
+    '--tries=100',
+    '--pause-time=61',
+    '--pause-tries=100',
+    '--pause-period=119',
+    '--output-file=pget2.log',
+    '--sub-string=<html|</html>',
     '--recursive',
     '--no-clobber',
     '--page-requisites',
     '--adjust-extension',
     '--no-check-certificate',
-    '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
-    '--tries=1000',
-    '--pause-time=3600',
-    '--pause-tries=5'
+    '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36'
 ];
 
 /**
@@ -69,7 +72,7 @@ $param_list = [
  *   --local-encoding  本地编码，默认UTF-8
  *   --level             递归深度，默认5级
  *   --pause-tries  最多允许暂停次数
- *   --pause-interval  两次暂停最小间隔（秒）
+ *   --pause-period  周期性暂停最小间隔（秒）
  *   --pause-time  每次暂停时长（秒）
  * 
  */
@@ -123,7 +126,7 @@ class PgetConfig
     public array $options = [
         '--mirror' => 0,
         '--recursive' => 0,
-        '--input-file' => 0,
+        '--input-file' => '',
         '--no-clobber' => 0,
         '--start-url' => '',
         '--directory-prefix' => '',
@@ -154,7 +157,7 @@ class PgetConfig
         '--level' => 5,
         '--max-threads' => 0,
         '--pause-time' => 0,
-        '--pause-interval' => 0,
+        '--pause-period' => 0,
         '--pause-tries' => 0,
     ];
     public array $sub_string_rules = [];
@@ -444,7 +447,7 @@ class Pget
     private function singleRequest($url)
     {
         // 调用下载并保存内容的方法
-        $this->catcher_url_to_local($url);
+        $this->singleRequest_to_local($url);
         $this->flush_log_buffer();
     }
 
@@ -797,7 +800,7 @@ class Pget
      * 5. 记录到临时表
      * 6. 为避免频繁的parse_url，故将解析后的数组作为参数传递
      */
-    public function catcher_url_to_local($url)
+    public function singleRequest_to_local($url)
     {
         $number = $this->loop_count++;
         // 检查URL是否需要过滤
@@ -805,12 +808,6 @@ class Pget
             // 若URL被过滤，则输出过滤日志信息并返回
             $this->echo_logs($number, $url, 'Reject');
             return false;
-        }
-
-        if ($this->error_count > $this->cfg['--tries']) {
-            // 如果连续错误超过--tries次，则退出循环
-            $this->echo_logs("{$this->error_count} error tries, exit");
-            throw new \RuntimeException("{$this->error_count} error tries, exit");
         }
 
         // 输出请求日志信息
@@ -830,12 +827,6 @@ class Pget
         list($response, $http_info) = $this->get($url);
         // 处理下载结果
         $this->handle_downloaded_content($url, $response, $http_info, $number, $is_file_exist);
-
-        // 若设置了操作间隔时间，则进行等待
-        if ($this->cfg['--wait']) {
-            $this->echo_logs('Waiting ' . $this->cfg['--wait'] . ' seconds');
-            $this->wait($this->cfg['--wait']);
-        }
 
         return true;
     }
@@ -1282,11 +1273,6 @@ class Pget
         // 将秒转换为微秒
         $microseconds = (int)($seconds * 1000000);
 
-        // 如果上次请求的时间距离当前时间的差值已经大于--wait的值，那就不要休眠了
-        if ($this->last_request_time && (microtime(true) - $this->last_request_time) > $microseconds) {
-            return false;
-        }
-
         // 根据等待时间的类型进行处理
         if (is_int($seconds) || $seconds == (int)$seconds) {
             // 若等待时间为整数，则使用sleep函数等待
@@ -1335,7 +1321,6 @@ class Pget
             return $get_absolute_url_cache[$key];
         }
         return $get_absolute_url_cache[$key] = $this->get_standard_url($dirname . $path);
-        return $this->get_standard_url($dirname . $path);
     }
 
     /**
@@ -1400,25 +1385,23 @@ class Pget
 
         $ch = $this->createHandle($url);
 
-        // 获取 cURL 错误码
         $curl_errno = curl_errno($ch);
-        // 获取 cURL 错误信息
         $curl_error = curl_error($ch);
-        // 开始抓取
+        $http_info = curl_getinfo($ch);
+        $code = $http_info['http_code'];
         $response = curl_exec($ch);
-        $chInfo = curl_getinfo($ch);
-        // 关闭连接
+
         curl_close($ch);
 
         // 请求出错或反馈内容为空
         if ($curl_errno !== 0 || $code === 403) {
             $this->error_count++;
-            $this->error($ch, "Error Code : {$curl_errno}\tMessage : {$curl_error}");
+            $this->failure($ch, "URL : {$url}\tError Code : {$curl_errno}\tError Message : {$curl_error}\tHttp Code : {$code}");
             return [false, []];
         }
 
         // 返回结果
-        return [$response, $chInfo];
+        return [$response, $http_info];
     }
     /**
      * 串行采集：POST方式
@@ -1527,20 +1510,28 @@ class Pget
         $this->add_url_action_if_new($url, 'enqueue');
         $this->add_url_action_if_new($url, 'linktable');
     }
-
     /**
-     * 从待采集任务栈中取任务,加入正在采集的任务集
-     * URL不需要编码，因为在添加队列时已经编码过了
+     * 错误暂停和周期暂停
      */
-    private function fillMap(): void
+    private function pause()
     {
 
         // 超过最大重试次数就停止
         static $pause_tries_count = 0;
-        static $last_pause_time = 0;
+        // 周期性暂停时间记录
+        static $last_period_pause_time = time();
+
+        // 周期性暂停（无论是否出错都执行）
+        if ($this->cfg['--pause-period'] > 0 && $this->cfg['--pause-time'] > 0) {
+            $now = time();
+            if ($now - $last_period_pause_time > $this->cfg['--pause-period']) {
+                $this->echo_logs('FORCEECHO', "Periodic pause for {$this->cfg['--pause-time']}s (period mode)");
+                sleep($this->cfg['--pause-time']);
+                $last_period_pause_time = $now;
+            }
+        }
 
         if ($this->error_count > $this->cfg['--tries']) {
-            // 互斥逻辑：如果 pause-tries 和 pause-interval 都配置，则只用 pause-tries
             if ($this->cfg['--pause-tries'] > 0) {
                 // 最大暂停次数逻辑
                 if ($pause_tries_count < $this->cfg['--pause-tries'] && $this->cfg['--pause-time'] > 0) {
@@ -1549,30 +1540,24 @@ class Pget
                     $pause_tries_count++;
                     $this->error_count = 0; // 归零错误次数
                 } else {
-                    $this->echo_logs("ERROR: Too many retries (pause limit reached)");
-                    $this->flush_log_buffer();
-                    throw new \Exception("ERROR: Too many retries");
-                }
-            } elseif ($this->cfg['--pause-interval'] > 0 && $this->cfg['--pause-time'] > 0) {
-                // 按照间隔逻辑
-                $now = time();
-                if ($now - $last_pause_time > $this->cfg['--pause-interval']) {
-                    $this->echo_logs('FORCEECHO', "Error limit reached, pausing for {$this->cfg['--pause-time']}s (interval mode)");
-                    sleep($this->cfg['--pause-time']);
-                    $last_pause_time = $now;
-                    $this->error_count = 0; // 归零错误次数
-                } else {
-                    $this->echo_logs("ERROR: Too many retries (interval not reached)");
+                    $this->echo_logs('FORCEECHO', "ERROR: Too many retries (pause limit reached)");
                     $this->flush_log_buffer();
                     throw new \Exception("ERROR: Too many retries");
                 }
             } else {
                 // 没有配置暂停参数，直接抛出异常
-                $this->echo_logs("ERROR: Too many retries (no pause configured)");
+                $this->echo_logs('FORCEECHO', "ERROR: Too many retries (no pause configured)");
                 $this->flush_log_buffer();
                 throw new \Exception("ERROR: Too many retries");
             }
         }
+    }
+    /**
+     * 从待采集任务栈中取任务,加入正在采集的任务集
+     * URL不需要编码，因为在添加队列时已经编码过了
+     */
+    private function fillMap(): void
+    {
 
         //从待处理列表中取信息到正在处理的列表中
         while (count($this->handleMap) < $this->cfg['--max-threads'] && $this->pending_queue->isEmpty() === false) {
@@ -1647,23 +1632,27 @@ class Pget
         $curl_errno = curl_errno($ch);
         // 获取 cURL 错误信息
         $curl_error = curl_error($ch);
-
         //curl信息
         $http_info = curl_getinfo($ch);
+        // http code
+        $code = $http_info['http_code'];
         // 最终访问的URL，如果允许了跳转则此处不等于原始URL
-        // $effectiveUrl = $chInfo['url'];
+        // $effectiveUrl = $http_info['url'];
         // 获取原始URL
-        // $url = $this->handleMap[$ch]['url'];
+        $url = $this->handleMap[$ch]['url'];
         //采集到的内容
         $response = curl_multi_getcontent($ch);
 
         // 请求出错或反馈内容为空
-        if ($curl_errno !== 0) {
-            $this->error($ch, "Error Code : {$curl_errno}\tMessage : {$curl_error}");
+        if ($curl_errno !== 0 || $code === 403) {
+            $this->failure($ch, "URL : {$url}\tError Code : {$curl_errno}\tError Message : {$curl_error}\tHttp Code : {$code}");
         } else {
             $this->success($ch, $response, $http_info);
         }
     }
+    /**
+     * 开始单线采集
+     */
     public function run_singlecatcher()
     {
         try {
@@ -1671,11 +1660,20 @@ class Pget
             $this->echo_logs('FORCEECHO', 'Running in serial mode (max-threads <= 1)');
             // 主循环
             while ($this->pending_queue->isEmpty() === false) {
+                // 错误暂停和周期暂停
+                $this->pause();
+
                 // 从队列中取出一个URL
                 $url = $this->pending_queue->dequeue();
 
                 // 单次下载并保存内容的方法
-                $this->catcher_url_to_local($url);
+                $this->singleRequest_to_local($url);
+
+                // 若设置了操作间隔时间，则进行等待
+                if ($this->cfg['--wait']) {
+                    $this->echo_logs('Waiting ' . $this->cfg['--wait'] . ' seconds');
+                    $this->wait($this->cfg['--wait']);
+                }
 
                 // 每一轮操作后写入日志
                 $this->flush_log_buffer();
@@ -1691,7 +1689,7 @@ class Pget
         $this->flush_log_buffer();
     }
     /**
-     * 任务入栈后,开始并发采集
+     * 开始并发采集
      */
     public function run_multicatcher()
     {
@@ -1704,6 +1702,9 @@ class Pget
 
             // 最外层的循环用于每轮任务完成后的休眠（不能在主循环和填充任务队列时进行休眠，会导致错误次数超过阈值和每个任务后都休眠）
             while ($this->pending_queue->isEmpty() === false) {
+                // 错误暂停和周期暂停
+                $this->pause();
+
                 // 初始填充任务或统一补充任务
                 $this->fillMap();
 
@@ -1753,7 +1754,7 @@ class Pget
 
                 // 若设置了操作间隔时间，则进行等待。等待功能不能在 curl_multi_* 处理结构内部，会造成并发请求超时错误
                 if ($this->cfg['--wait']) {
-                    $this->echo_logs('FORCEECHO', 'Waiting for ' . $this->cfg['--wait'] . ' seconds...');
+                    $this->echo_logs('Waiting for ' . $this->cfg['--wait'] . ' seconds...');
                     $this->wait($this->cfg['--wait']);
                 }
             }
@@ -2065,7 +2066,7 @@ class Pget
         // 处理下载结果
         $this->handle_downloaded_content($url, $response, $http_info, $number, $is_file_exist);
     }
-    public function error($ch, $message): void
+    public function failure($ch, $message): void
     {
         $number = $this->handleMap[$ch]['id'];
         // 获取原始URL
@@ -2074,7 +2075,7 @@ class Pget
         $this->add_linktable_url_status($url, false);
         $this->error_count++;
 
-        $this->echo_logs($number, $this->handleMap[$ch]['url'], $message, "Error Counts: {$this->error_count}");
+        $this->echo_logs('FORCEECHO', $number, date('Y-m-d H:i:s'), $message . "\tError Counts: {$this->error_count}");
     }
 }
 

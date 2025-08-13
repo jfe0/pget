@@ -2,24 +2,25 @@
 
 // 命令行参数列表，用于初始化配置
 $param_list = [
-    '',
-    '--start-url=http://www.tdbat.com/',
-    '--sub-string=<div class="panel-body">|<div class="panel-heading title">',
+    '', // 控制代替脚本自名
+    '--start-url=http://www.ccbbp.com/',
     '--directory-prefix=C:\\workspace\\wwwcrawler',
     '--reject-regex=\?|#|&|(\.rar)|(\.zip)|(\.epub)|(\.txt)|(\.pdf)',
-    '--wait=2',
+    '--wait=5',
     '--max-threads=10',
+    '--tries=100',
+    '--pause-time=61',
+    '--pause-tries=100',
+    '--pause-period=119',
+    '--output-file=pget2.log',
+    '--sub-string=<html|</html>',
+    '--store-database',
     '--no-verbose',
     '--recursive',
     '--no-clobber',
     '--page-requisites',
     '--no-check-certificate',
-    '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
-    '--tries=100',
-    '--output-file=pget2.log',
-    '--store-database',
-    '--pause-time=2000',
-    '--pause-tries=5',
+    '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36'
 ];
 
 /* 
@@ -73,7 +74,7 @@ $param_list = [
  *   --local-encoding  本地编码，默认UTF-8
  *   --level             递归深度，默认5级
  *   --pause-tries  最多允许暂停次数
- *   --pause-interval  两次暂停最小间隔（秒）
+ *   --pause-period  周期性暂停最小间隔（秒）
  *   --pause-time  每次暂停时长（秒）
  * 
  */
@@ -155,7 +156,7 @@ class PgetConfig
         '--no-cache' => 0,
         '--max-threads' => 0,
         '--pause-time' => 0,
-        '--pause-interval' => 0,
+        '--pause-period' => 0,
         '--pause-tries' => 0
     ];
     public bool $isWindows = false;
@@ -288,16 +289,12 @@ class Pget
     private int $loop_count = 1;
     // 已处理链接表：键为链接，值为布尔值（true=本地文件存在，false=不存在）
     public array $link_table = [];
-    // 待处理链接队列
-    public SplQueue $pending_queue;
     // 日志文件句柄
     private $log_file_handle = null;
     // 过滤规则
     private array $filter = [];
     // 日志缓存
     private array $log_buffer = [];
-    // 扩展名
-    private array $extensions = [];
     // 响应头内容类型
     private array $content_type = [];
     // 主机列表
@@ -324,8 +321,6 @@ class Pget
         $this->cfg['sub_string_rules'] = $this->config->sub_string_rules;
         $this->cfg['isWindows'] = $this->config->isWindows;
         $this->cfg['isChineseWindows'] = $this->config->isChineseWindows;
-        // 初始化待处理链接队列
-        // $this->pending_queue = new SplQueue();
         // 如果配置了输出日志文件，则打开文件句柄并清空旧内容
         if ($this->cfg['--output-file']) {
             $log_file = $this->cfg['start_info']['directory_prefix'] . DIRECTORY_SEPARATOR . $this->cfg['--output-file'];
@@ -356,7 +351,6 @@ class Pget
             'video/mp4' => 'mp4',
             // ...可扩展
         ];
-        $this->extensions = array_values($this->content_type);
         // 若 --span-hosts 为假，则限制在本域名内，相当于 --domains 内只有本域名一条记录。若 --span-hosts 为真，则将 -- domains 格式化为数组，若此时 --domains 为空，相当于只配置了 --span-hosts ，则允许任意域名。
         if ($this->cfg['--span-hosts']) {
             if (empty($this->cfg['--domains'])) {
@@ -461,16 +455,12 @@ class Pget
         $this->funcUtils->{$create_db_func_type}($db_name);
 
         // 初始化抓取类
-        $this->catcher = new MultiCatcher(
-            'concurrency=' . $this->cfg['--max-threads'],
-            'tries=' . $this->cfg['--tries'],
-            'pause_tries=' . $this->cfg['--pause-tries'],
-            'pause_interval=' . $this->cfg['--pause-interval'],
-            'pause_time=' . $this->cfg['--pause-time']
-        );
+        $this->catcher = new MultiCatcher('concurrency=' . $this->cfg['--max-threads']);
+        // 同步错误计数
+        $this->catcher->setExternalErrorCount($this->getErrorCountRef());
         // 绑定回调函数
-        $this->catcher->success = function ($url, $result, $chInfo) {
-            return $this->success($url, $result, $chInfo);
+        $this->catcher->success = function ($url, $result, $http_info) {
+            return $this->success($url, $result, $http_info);
         };
         $this->catcher->failure = function ($url, $messages) {
             return $this->failure($url, $messages);
@@ -502,6 +492,9 @@ class Pget
             $maxThreads = $this->cfg['--max-threads'] ?? 20;
 
             while (count($link_table_tub) > 0) {
+                // 错误暂停和周期暂停
+                $this->pause();
+
                 // 将link_table 按maxThreads分割成数组
                 $this->link_table = array_splice($link_table_tub, 0, $maxThreads);
 
@@ -511,7 +504,7 @@ class Pget
 
                 $this->pdo->beginTransaction();
 
-                foreach ($this->link_table as $url => $url_info) {
+                foreach ($this->link_table as $url => $use_status) {
                     $this->catcher->pushJob($url);
                 }
                 $this->catcher->run();
@@ -606,9 +599,9 @@ class Pget
         $this->flush_log_buffer();
     }
     // 请求成功处理函数
-    public function success($url, $result, $chInfo)
+    public function success($url, $result, $http_info)
     {
-        $this->echo_logs($this->loop_count, "URL : {$url}\tHttp_Code : {$chInfo['http_code']}");
+        $this->echo_logs($this->loop_count, "URL : {$url}\tHttp_Code : {$http_info['http_code']}");
 
         $local_file = '';
         $local_file_utf8 = '';
@@ -652,11 +645,11 @@ class Pget
             // 兼容中文路径（PHP8+Windows10不需要手动转码路径字符）
             // --adjust-extension: 仅对既不是目录也没有扩展名的URL，根据content-type补全扩展名
             if ($this->cfg['--adjust-extension']) {
-                if (empty($chInfo['content_type'])) {
-                    $chInfo['content_type'] = 'text/html';
+                if (empty($http_info['content_type'])) {
+                    $http_info['content_type'] = 'text/html';
                 }
                 // 根据响应的content-type获取扩展名
-                $content_type = $this->get_ext_by_content_type($chInfo['content_type']);
+                $content_type = $this->get_ext_by_content_type($http_info['content_type']);
                 // 判断本地文件是否为目录，经过url_local_path处理过，目录结尾是index.html，所以此处不可能是/结尾
                 // 若不是目录且没有扩展名，且能获取到扩展名，则补全扩展名
                 if (empty($this->funcUtils->get_ext($local_file)) && $content_type) {
@@ -736,6 +729,54 @@ class Pget
             fwrite($this->log_file_handle, implode('', $this->log_buffer));
             $this->log_buffer = [];
         }
+    }
+    private $error_count = 0; // 错误总次数
+    /**
+     * 错误暂停和周期暂停
+     */
+    public function pause()
+    {
+
+        // 超过最大重试次数就停止
+        static $pause_tries_count = 0;
+        // 周期性暂停时间记录
+        static $last_period_pause_time = time();
+
+        // 周期性暂停（无论是否出错都执行）
+        if ($this->cfg['--pause-period'] > 0 && $this->cfg['--pause-time'] > 0) {
+            $now = time();
+            if ($now - $last_period_pause_time > $this->cfg['--pause-period']) {
+                $this->echo_logs('FORCEECHO', "Periodic pause for {$this->cfg['--pause-time']}s (period mode)");
+                sleep($this->cfg['--pause-time']);
+                $last_period_pause_time = $now;
+            }
+        }
+
+        if ($this->error_count > $this->cfg['--tries']) {
+            if ($this->cfg['--pause-tries'] > 0) {
+                // 最大暂停次数逻辑
+                if ($pause_tries_count < $this->cfg['--pause-tries'] && $this->cfg['--pause-time'] > 0) {
+                    $this->echo_logs('FORCEECHO', "Error limit reached, pausing for {$this->cfg['--pause-time']}s (pause #" . ($pause_tries_count + 1) . ")");
+                    sleep($this->cfg['--pause-time']);
+                    $pause_tries_count++;
+                    $this->error_count = 0; // 归零错误次数
+                } else {
+                    $this->echo_logs('FORCEECHO', "ERROR: Too many retries (pause limit reached)");
+                    $this->flush_log_buffer();
+                    throw new \Exception("ERROR: Too many retries");
+                }
+            } else {
+                // 没有配置暂停参数，直接抛出异常
+                $this->echo_logs('FORCEECHO', "ERROR: Too many retries (no pause configured)");
+                $this->flush_log_buffer();
+                throw new \Exception("ERROR: Too many retries");
+            }
+        }
+    }
+    // 引用错误次数
+    public function &getErrorCountRef()
+    {
+        return $this->error_count;
     }
 }
 // =================== 工具爬虫 ===================
@@ -1214,7 +1255,6 @@ class FuncCatcher extends Funcutils
         $this->filter = $filter;
         $this->domains = $domains;
     }
-
     /**********
      * PDO模式初始化采集数据库结构 logs、sources 和 contents
      * 函数执行前连接数据库时务必设置错误模式和字符模式
@@ -1242,7 +1282,7 @@ class FuncCatcher extends Funcutils
 		UNIQUE INDEX `url` (`url`)
 		)
 		COLLATE='utf8mb4_general_ci'
-		ENGINE=MyISAM ;
+		ENGINE=InnoDB ;
 		CREATE TABLE IF NOT EXISTS `$tb_contents` (
 		`id` INT(11) UNSIGNED NOT NULL AUTO_INCREMENT,
 		`url` VARCHAR(250) NOT NULL DEFAULT '' COLLATE 'utf8_general_ci' ,
@@ -1251,7 +1291,7 @@ class FuncCatcher extends Funcutils
 		PRIMARY KEY (`id`)
 		)
 		COLLATE='utf8mb4_general_ci'
-		ENGINE=MyISAM
+		ENGINE=InnoDB
 		PARTITION BY HASH(`id`)
 		PARTITIONS 64;
 		CREATE TABLE IF NOT EXISTS `sources` (
@@ -1263,7 +1303,7 @@ class FuncCatcher extends Funcutils
 		UNIQUE INDEX `url` (`url`)
 		)
 		COLLATE='utf8_general_ci'
-		ENGINE=MyISAM ;
+		ENGINE=InnoDB ;
 		EOF;
         $this->pdo->exec($create_table);
         $this->pdo->exec("USE {$db_name};");
@@ -1432,7 +1472,6 @@ class MultiCatcher
     // 以下是需要配置的运行参数
     // 最大重试次数不需要配置，由主控重新将链接入栈即可
     public $timeout = 5; //默认的超时
-    public $proxy = false; //是否使用代理服务器
     public $concurrency = 25; //并发数量
     public $randuseragent = false; //是否自动更换UserAgent
     public $followlocation = false; //是否自动301/302跳转
@@ -1444,11 +1483,13 @@ class MultiCatcher
     private $jobStack = array(); // 任务栈,可划分优先级,0最高
     private $map;  // 正在采集的句柄集
     private $chs; // 总采集句柄
-    private $error_count = 0; // 错误总次数
-    public $tries = 0; // 允许的错误次数
-    public $pause_tries = 0; // 最多允许暂停次数
-    public $pause_interval = 0; // 两次暂停最小间隔（秒）
-    public $pause_time = 0; // 每次暂停时长（秒）
+    private $external_error_count = null; // 添加这行
+    //可以使用的用户代理,随机使用
+    private $agents = array(
+        'Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)',
+        'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+        'Mozilla/5.0 (compatible; Baiduspider/2.0; +http://www.baidu.com/search/spider.html)'
+    );
     /**
      * 构造函数，参数赋值
      */
@@ -1470,13 +1511,11 @@ class MultiCatcher
             curl_multi_close($this->chs);
         }
     }
-
     /**
      * 串行采集
      *
      * @param unknown $url 要采集的地址
      * @param string $referer
-     * @param string $proxy
      * @param string $cookie
      * @param string $header
      * @return string html_body
@@ -1486,26 +1525,26 @@ class MultiCatcher
 
         $ch = $this->createHandle($url, $cookie, $header);
 
-        // 开始抓取
-        $content = curl_exec($ch);
-        $chInfo = curl_getinfo($ch);
-        $code = $chInfo['http_code'];
-        // 关闭连接
+        $response = curl_exec($ch);
+        $curl_errno = curl_errno($ch);
+        $curl_error = curl_error($ch);
+        $http_info = curl_getinfo($ch);
+        $code = $http_info['http_code'];
+
         curl_close($ch);
-        $length = strlen($content);
+
         // 请求出错或反馈内容为空
-        if ($code != 200 or $length == 0) {
-            call_user_func($this->errorlog, "URL : {$url}\tHttp_Code : {$code}\tLength : {$length}");
+        if ($curl_errno !== 0 || $code === 403) {
+            call_user_func($this->errorlog, "URL : {$url}\tError Code : {$curl_errno}\tError Message : {$curl_error}\tHttp Code : {$code}");
             return null;
         }
 
         // 本次抓取成功
-        call_user_func($this->accesslog, "URL : {$url}\tHttp_Code : {$code}\tUsed : " . round($chInfo['total_time'], 2) . " \tLength : {$length}");
+        call_user_func($this->accesslog, "URL : {$url}\tError Code : {$curl_errno}\tError Message : {$curl_error}\tHttp Code : {$code}");
 
         // 返回结果
-        return $content;
+        return $response;
     }
-
     /**
      * 添加一个异步任务
      * @param 采集地址 $url
@@ -1521,7 +1560,6 @@ class MultiCatcher
         );
         return $this;
     }
-
     /**
      * 创建一个抓取句柄
      * @param unknown $url 要抓取的地址
@@ -1590,47 +1628,12 @@ class MultiCatcher
         }
         return $ch;
     }
-
     /**
      * 从待采集任务栈中取任务,加入正在采集的任务集
      */
     private function fillMap()
     {
-        // 超过最大重试次数就停止
-        static $pause_tries_count = 0;
-        static $last_pause_time = 0;
 
-        if ($this->error_count > $this->tries) {
-            // 互斥逻辑：如果 pause_tries 和 pause_interval 都配置，则只用 pause_tries
-            if ($this->pause_tries > 0) {
-                // 按照最大暂停次数逻辑
-                if ($pause_tries_count < $this->pause_tries && $this->pause_time > 0) {
-                    call_user_func($this->errorlog, "FORCEECHO", "Error limit reached, pausing for {$this->pause_time}s (pause #" . ($pause_tries_count + 1) . ")");
-                    sleep($this->pause_time);
-                    $pause_tries_count++;
-                    $this->error_count = 0; // 归零错误次数
-                } else {
-                    call_user_func($this->errorlog, "FORCEECHO", "ERROR: Too many retries (pause limit reached)");
-                    throw new \Exception("ERROR: Too many retries");
-                }
-            } elseif ($this->pause_interval > 0 && $this->pause_time > 0) {
-                // 按照间隔逻辑
-                $now = time();
-                if ($now - $last_pause_time > $this->pause_interval) {
-                    call_user_func($this->errorlog, "FORCEECHO", "Error limit reached, pausing for {$this->pause_time}s (interval mode)");
-                    sleep($this->pause_time);
-                    $last_pause_time = $now;
-                    $this->error_count = 0; // 归零错误次数
-                } else {
-                    call_user_func($this->errorlog, "FORCEECHO", "ERROR: Too many retries (interval not reached)");
-                    throw new \Exception("ERROR: Too many retries");
-                }
-            } else {
-                // 没有配置暂停参数，直接抛出异常
-                call_user_func($this->errorlog, "FORCEECHO", "ERROR: Too many retries (no pause configured)");
-                throw new \Exception("ERROR: Too many retries");
-            }
-        }
         //从待处理列表中取信息到正在处理的列表中
         while (count($this->map) < $this->concurrency) {
             $job = false;
@@ -1649,7 +1652,6 @@ class MultiCatcher
         }
         return null;
     }
-
     /**
      * 处理一个已经采集到的任务
      * @param unknown $done
@@ -1663,9 +1665,9 @@ class MultiCatcher
         // 获取 cURL 错误信息
         $curl_error = curl_error($ch);
         //curl信息
-        $chInfo = curl_getinfo($ch);
+        $http_info = curl_getinfo($ch);
         //http code
-        $code = $chInfo['http_code'] ?? null;
+        $code = $http_info['http_code'] ?? null;
         //原始URL
         $url = $this->map[$ch]['url'];
         //采集到的内容
@@ -1673,17 +1675,19 @@ class MultiCatcher
 
         // 请求出错或反馈内容为空
         if ($curl_errno !== 0 || $code === 403) {
-            $this->error_count++;
+            // 更新外部错误计数器（如果已设置）
+            if ($this->external_error_count !== null) {
+                $this->external_error_count++;
+            }
             // 调用 回调方法,对采集的内容进行处理
             call_user_func($this->failure, $url, "URL : {$url}\tError Code : {$curl_errno}\tError Message : {$curl_error}\tHttp Code : {$code}");
         } else {
             // 调用 回调对象的callback方法,对采集的内容进行处理
-            call_user_func($this->success, $url, $result, $chInfo);
+            call_user_func($this->success, $url, $result, $http_info);
         }
         //去除此任务
         unset($this->map[$ch]);
     }
-
     /**
      * 任务入栈后,开始并发采集
      */
@@ -1741,13 +1745,11 @@ class MultiCatcher
             throw $e; // 重新抛出异常
         }
     }
-
-    //可以使用的用户代理,随机使用
-    private $agents = array(
-        'Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)',
-        'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-        'Mozilla/5.0 (compatible; Baiduspider/2.0; +http://www.baidu.com/search/spider.html)'
-    );
+    // 更新外部错误次数
+    public function setExternalErrorCount(&$external_error_count)
+    {
+        $this->external_error_count = &$external_error_count;
+    }
 }
 
 /* =============================== 公共函数 ============================= */
