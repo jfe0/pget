@@ -3,6 +3,6 @@
 set "script_path=%~dp0"
 echo %script_path%
 echo %date% %time%
-::使用dos变量时不能待引号，但是其它参数的值字符串必须带引号。因为dos的传参方式问题导致
+@REM ::使用dos变量时不能带引号，但是其它参数的值字符串必须带引号。因为dos的传参方式问题导致。参数中注意管道符，只有双引号内管道符不生效
 ::runhiddenconsole.exe ^ 
-php.exe C:\workspace\wwwcrawler\pget2.php --directory-prefix=%script_path% --recursive --no-verbose --no-clobber --adjust-extension --no-check-certificate --output-file="pget2.log" --save-cookies="cookie" --user-agent="Mozilla/5.0 (compatible; Baiduspider/2.0; +http://www.baidu.com/search/spider.html)" --reject-regex="\?|#|&|(\.rar)|(\.zip)|(\.epub)|(\.txt)|(\.pdf)|(^http:\/\/)" --tries=1000 --max-threads=9 --wait=1 https://www.ccbbp.com/
+php.exe C:\workspace\crawler\pget2.php --directory-prefix=%script_path% --recursive --no-verbose --no-clobber --adjust-extension --no-check-certificate --output-file="pget2.log" --save-cookies="cookie" --user-agent="Mozilla/5.0 (compatible; Baiduspider/2.0; +http://www.baidu.com/search/spider.html)" --reject-regex="\?|#|&|\.(?:rar|gz|zip|epub|txt|pdf|apk|deb|dmg|exe)$|\/users\/|^http:\/\/" --tries=1000 --max-threads=9 --wait=1 --sub-string="<div class=\"body\">|<div class=\"heading title\">" https://www.ccbbp.com/

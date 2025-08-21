@@ -229,10 +229,9 @@ class PgetConfig
                                 explode(',', $amd[1])
                             ];
                         }
-                    } else {
-                        // 其他参数直接赋值
-                        $this->options[$config_name] = $config_value;
                     }
+                    // 其他参数直接赋值
+                    $this->options[$config_name] = $config_value;
                 }
             } else {
                 // 处理无等号的参数

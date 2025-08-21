@@ -34,7 +34,7 @@ $param_list = [
  * 2025-08-05 增加创建目录失败的处理（Windows下存在同名文件时创建目录失败）
  * 
  * 用法示例：
- * php pget.php --recursive --adjust-extension --restrict-file-names --no-check-certificate --tries=10 --wait=0.5 --save-cookies="cookie" --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0" --reject-regex="\?|#|&|(?:\.rar)|(?:\.zip)|(?:\.epub)|(?:\.txt)|(?:\.pdf)" --reject="woff,jpg,png,webp" --accept="html,js,css" --sub-string="<p id=\"b\">,<p class=\"a b\">|</p>,</p>" https://domain/
+ * php pget2.php --directory-prefix=C:\\workspace\\wwwcrawler --store-database --recursive --no-verbose --no-clobber --adjust-extension --no-check-certificate --output-file="pget2.log" --save-cookies="cookie" --user-agent="Mozilla/5.0" --reject="woff,jpg,png,webp" --accept="html,js,css" --reject-regex="\?|#|&|(\.rar)|(\.zip)|(\.epub)|(\.txt)|(\.pdf)" --tries=100 --max-threads=10 --wait=2 --pause-time=2000 --pause-tries=5 --sub-string="<div class=\"panel-body\">|<div class=\"panel-heading title\">" https://domain/
  * php pget.php https://domain/link
  * php pget.php --input-file="urls.txt"
  * 
@@ -74,6 +74,8 @@ $param_list = [
  *   --pause-tries  最多允许暂停次数
  *   --pause-period  周期性暂停最小间隔（秒）
  *   --pause-time  每次暂停时长（秒）
+ *   --strip-ss 去除网页中的script和style
+ *   --strip-tags 去除网页标签
  * 
  */
 
@@ -81,7 +83,7 @@ mb_internal_encoding('UTF-8');
 mb_http_output('UTF-8');
 if (php_sapi_name() !== 'cli') die("Only be run in CLI mode.\n"); // 检查是否在命令行模式下运行
 if (version_compare(PHP_VERSION, '8.0.0', '<')) die("PHP 8.0+ Required.\n"); // PHP版本检查
-if (!extension_loaded('pdo_sqlite')) echo "pdo_sqlite extension is not enabled. logs wiil not be using.\n"; // 检查 PDO SQLite 是否可用
+if (!extension_loaded('pdo_sqlite')) echo "pdo_sqlite extension is not enabled. logs will not be using.\n"; // 检查 PDO SQLite 是否可用
 error_reporting(E_ALL & ~E_NOTICE); // 只显示除了通知之外的所有错误
 set_time_limit(0); // 设置脚本执行时间无限制
 ignore_user_abort(1); // 忽略用户断开连接，确保脚本继续执行
@@ -111,6 +113,8 @@ try {
     $pget = new Pget($config);
     // 启动主流程
     $pget->run();
+    // 释放资源
+    unset($pget);
 } catch (\Throwable $e) {
     // 使用配置中的目录前缀
     $dir_prefix = isset($pget) && isset($pget->cfg['--directory-prefix']) ? $pget->cfg['--directory-prefix'] : __DIR__;
@@ -124,10 +128,10 @@ class PgetConfig
 {
     // 配置选项
     public array $options = [
-        '--mirror' => 0,
-        '--recursive' => 0,
+        '--mirror' => false,
+        '--recursive' => false,
         '--input-file' => '',
-        '--no-clobber' => 0,
+        '--no-clobber' => false,
         '--start-url' => '',
         '--directory-prefix' => '',
         '--reject' => '',
@@ -136,22 +140,22 @@ class PgetConfig
         '--accept-regex' => '',
         '--sub-string' => '',
         '--wait' => 0,
-        '--no-verbose' => 0,
-        '--page-requisites' => 0,
-        '--utf-8' => 0,
+        '--no-verbose' => false,
+        '--page-requisites' => false,
+        '--utf-8' => false,
         '--span-hosts' => '',
         '--domains' => '',
-        '--adjust-extension' => 0,
-        '--restrict-file-names' => 0,
-        '--no-parent' => 0,
-        '--no-check-certificate' => 0,
+        '--adjust-extension' => false,
+        '--restrict-file-names' => false,
+        '--no-parent' => false,
+        '--no-check-certificate' => false,
         '--user-agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
         '--header' => '',
         '--save-cookies' => '',
         '--load-cookies' => '',
-        '--keep-session-cookies' => 0,
+        '--keep-session-cookies' => false,
         '--output-file' => '',
-        '--force-directories' => 0,
+        '--force-directories' => true,
         '--tries' => 20,
         '--retry-connrefused' => 0,
         '--level' => 5,
@@ -159,6 +163,8 @@ class PgetConfig
         '--pause-time' => 0,
         '--pause-period' => 0,
         '--pause-tries' => 0,
+        '--strip-ss' => false, // 去除网页中的script和style
+        '--strip-tags' => false, // 去除网页标签
     ];
     public array $sub_string_rules = [];
     public bool $isWindows = false;
@@ -196,10 +202,9 @@ class PgetConfig
                                 explode(',', $amd[1])
                             ];
                         }
-                    } else {
-                        // 其他参数直接赋值
-                        $this->options[$config_name] = $config_value;
                     }
+                    // 其他参数直接赋值
+                    $this->options[$config_name] = $config_value;
                 }
             } else {
                 // 处理无等号的参数
@@ -215,10 +220,12 @@ class PgetConfig
                     '--adjust-extension',
                     '--restrict-file-names',
                     '--no-check-certificate',
-                    '--force-directories'
+                    '--force-directories',
+                    '--strip-ss',
+                    '--strip-tags'
                 ])) {
                     // 这些参数为开关型参数，设置为1表示启用
-                    $this->options[$param_list[$i]] = 1;
+                    $this->options[$param_list[$i]] = true;
                 } else {
                     // 若不是开关型参数，则作为起始URL
                     $this->options['--start-url'] = $param_list[$i];
@@ -271,44 +278,28 @@ class PgetConfig
         if (!empty($this->options['--accept-regex']) && !$safe_regex($this->options['--accept-regex'])) {
             throw new \InvalidArgumentException('Unsafe --accept-regex: ' . $this->options['--accept-regex'] . PHP_EOL);
         }
+        echo $this->options['--start-url'] . PHP_EOL;
     }
 }
 
 // =================== 主爬虫类 ===================
 class Pget
 {
-    // 爬虫配置类
-    public PgetConfig $config;
-    // 配置选项
-    public array $cfg = [];
-    // 循环计数
-    private int $loop_count = 1;
-    // 已处理链接表：键为链接，值为布尔值（true=本地文件存在，false=不存在，null=不存在）
-    public ArraySharder $link_table;
-    // 待处理链接队列
-    public SplQueue $pending_queue;
-    // 日志文件句柄
-    private $log_file_handle = null;
-    // 过滤规则
-    private array $filter = [];
-    // 网络错误次数
-    private int $error_count = 1;
-    // 上次请求的时间
-    private float $last_request_time = 0;
-    // 日志缓存
-    private array $log_buffer = [];
-    // 扩展名
-    private array $extensions = [];
-    // 响应头内容类型
-    private array $content_type = [];
-    // 起始链接相关信息
-    private array $start_info = [];
-    // 主机列表
-    private array $domain_list = [];
-    // 浏览器句柄
-    private $curl_handle = null;
-    // 目录前缀
-    private string $dir_prefix = '';
+
+    public PgetConfig $config; // 爬虫配置类
+    public array $cfg = []; // 配置选项
+    private int $loop_count = 1; // 循环计数
+    public ArraySharder $link_table; // 已处理链接表：键为链接，值为布尔值（true=本地文件存在，false=不存在，null=不存在）
+    public SplQueue $pending_queue; // 待处理链接队列
+    private $log_file_handle = null; // 日志文件句柄
+    private array $filter = []; // 过滤规则
+    private int $error_count = 1; // 网络错误次数
+    private array $log_buffer = []; // 日志缓存
+    private array $content_type = []; // 响应头内容类型
+    private array $start_info = []; // 起始链接相关信息
+    private array $domain_list = []; // 主机列表
+    private $curl_handle = null; // 浏览器句柄
+    private string $dir_prefix = ''; // 目录前缀
     /**
      * 构造函数，初始化配置和队列
      */
@@ -359,7 +350,6 @@ class Pget
             'video/mp4' => 'mp4',
             // ...可扩展
         ];
-        $this->extensions = array_values($this->content_type);
         // 起始链接的解析（用属性作传递，避免重复解析）
         $url_parsed = parse_url($this->cfg['--start-url']);
         if (!isset($url_parsed['scheme']) || !isset($url_parsed['host'])) {
@@ -392,19 +382,56 @@ class Pget
      */
     public function __destruct()
     {
-        unset($this->pending_queue);
-        unset($this->link_table);
-        // 若curl句柄存在，则关闭curl句柄
-        if ($this->curl_handle) {
+        // 清理队列和链接表
+        if (isset($this->pending_queue)) {
+            unset($this->pending_queue);
+        }
+        if (isset($this->link_table)) {
+            unset($this->link_table);
+        }
+
+        if (isset($this->domain_list)) {
+            unset($this->domain_list);
+        }
+
+        // 关闭单个 curl 句柄
+        if (isset($this->curl_handle) && is_resource($this->curl_handle)) {
             curl_close($this->curl_handle);
-            $this->curl_handle = null;
+            unset($this->curl_handle);
         }
-        // 若日志文件句柄存在，则关闭并释放
-        if ($this->log_file_handle && is_resource($this->log_file_handle)) {
+
+        // 关闭并发 curl 句柄
+        if (isset($this->chs) && is_resource($this->chs)) {
+            curl_multi_close($this->chs);
+            unset($this->chs);
+        }
+
+        // 关闭所有并发请求中的 curl 句柄
+        if (isset($this->handleMap) && $this->handleMap instanceof SplObjectStorage) {
+            // 正确遍历 SplObjectStorage
+            $this->handleMap->rewind();
+            while ($this->handleMap->valid()) {
+                $ch = $this->handleMap->current();
+                if (is_resource($ch)) {
+                    curl_close($ch);
+                }
+                $this->handleMap->next();
+            }
+            unset($this->handleMap);
+        }
+
+        // 关闭并清理日志文件句柄
+        if (isset($this->log_file_handle) && is_resource($this->log_file_handle)) {
             // 最后写入剩余日志缓存，万一有错误也忽略
-            @fwrite($this->log_file_handle, implode('', $this->log_buffer));
+            if (!empty($this->log_buffer)) {
+                @fwrite($this->log_file_handle, implode('', $this->log_buffer));
+            }
             fclose($this->log_file_handle);
+            unset($this->log_file_handle);
         }
+
+        // 清理其他属性
+        unset($this->log_buffer);
     }
 
     /**
@@ -474,7 +501,6 @@ class Pget
             } else {
                 $this->run_singlecatcher();
             }
-            $this->flush_log_buffer();
         } else {
             $this->echo_logs('Failed to open input file: ' . $filename);
         }
@@ -500,7 +526,7 @@ class Pget
             // 尝试从数据库加载已有数据
             if (!$this->loadFromDatabase()) {
                 $this->echo_logs('Failed to load data from database.');
-
+                // 读取本地文件
                 $this->start_once();
             }
         }
@@ -511,8 +537,7 @@ class Pget
         } else {
             $this->run_singlecatcher();
         }
-        // 最后一次写入日志
-        $this->flush_log_buffer();
+
         // 检查并处理信号
         if (function_exists('pcntl_signal_dispatch')) pcntl_signal_dispatch();
     }
@@ -551,6 +576,9 @@ class Pget
                     if ($this->config->isChineseWindows && !mb_detect_encoding($relative_path, 'UTF-8')) {
                         $relative_path = mb_convert_encoding($relative_path, 'UTF-8', 'GB2312');
                     }
+                    /* if ($this->config->isWindows && stripos($relative_path, '%2E') !== false) {
+                        $relative_path = str_ireplace('%2E', '.', $relative_path);
+                    } */
                     // 生成对应的完整URL
                     $url = $this->start_info['domain'] . ltrim($relative_path, '/');
 
@@ -945,9 +973,9 @@ class Pget
                 echo $log_message;
             }
         }
-        if ($flushlog) {
+        /* if ($flushlog) {
             $this->flush_log_buffer();
-        }
+        } */
     }
 
     /**
@@ -1145,9 +1173,23 @@ class Pget
         if (str_ends_with($path, '/')) {
             $path .= 'index.html';
         }
-        $decodedPath = rawurldecode($path);
+        $path = rawurldecode($path);
+        /* 
+        if ($this->config->isWindows) {
+            // 分割路径为各部分
+            $parts = explode('/', $path);
+            // 处理每个部分，将结尾的点号替换为%2E
+            foreach ($parts as &$part) {
+                if (substr($part, -1) === '.') {
+                    $part = rtrim($part, '.') . '%2E';
+                }
+            }
+            // 重新组合路径
+            $path = implode('/', $parts);
+        } */
+
         $query = empty($url_parsed['query']) ? '' : '?' . str_replace('/', '%2F', rawurldecode($url_parsed['query']));
-        $file_path = $decodedPath . $query;
+        $file_path = $path . $query;
         $file_path = ltrim($file_path, '/');
         if (!empty($this->cfg['--restrict-file-names'])) {
             $file_path = rawurlencodex($file_path);
@@ -1374,7 +1416,6 @@ class Pget
      * 串行采集：GET方式
      *
      * @param unknown $url 要采集的地址
-     * @param string $referer
      * @param string $proxy
      * @param string $cookie
      * @param string $header
@@ -1411,7 +1452,6 @@ class Pget
     /**
      * 创建一个抓取句柄
      * @param unknown $url 要抓取的地址
-     * @param string $referer
      * @return multitype:resource Ambigous
      */
     private function createHandle($url, $method = 'GET', $postfields = [])
@@ -1541,13 +1581,11 @@ class Pget
                     $this->error_count = 0; // 归零错误次数
                 } else {
                     $this->echo_logs('FORCEECHO', "ERROR: Too many retries (pause limit reached)");
-                    $this->flush_log_buffer();
                     throw new \Exception("ERROR: Too many retries");
                 }
             } else {
                 // 没有配置暂停参数，直接抛出异常
                 $this->echo_logs('FORCEECHO', "ERROR: Too many retries (no pause configured)");
-                $this->flush_log_buffer();
                 throw new \Exception("ERROR: Too many retries");
             }
         }
@@ -1682,11 +1720,8 @@ class Pget
             }
         } catch (Throwable $e) {
             $this->echo_logs($this->cfg['--start-url'], "SYSTEM ERROR: " . $e->getMessage());
-            curl_multi_close($this->chs);
             throw $e; // 重新抛出异常
         }
-        // 最后一次日志缓存刷新
-        $this->flush_log_buffer();
     }
     /**
      * 开始并发采集
@@ -1758,13 +1793,8 @@ class Pget
                     $this->wait($this->cfg['--wait']);
                 }
             }
-            // 释放资源
-            curl_multi_close($this->chs);
-            unset($this->handleMap);
         } catch (Throwable $e) {
             $this->echo_logs($this->cfg['--start-url'], "SYSTEM ERROR: " . $e->getMessage());
-            curl_multi_close($this->chs);
-            $this->flush_log_buffer(); // 异常时刷新日志
             throw $e; // 重新抛出异常
         }
     }
@@ -2010,8 +2040,10 @@ class Pget
             $this->echo_logs($number, $url,  'Links Add');
         }
         // 若设置了内容截取，则进行内容截取
-        if (!empty($this->cfg['--sub-string'])) {
+        if (!empty($this->cfg['--sub-string']) && (strpos($http_info['content_type'], 'text/html') !== false)) {
             $response = $this->sub_content_all($response, $sub_string_rules);
+            if ($this->cfg['--strip-ss']) $response = $this->removeScriptAndStyle($response);
+            if ($this->cfg['--strip-tags']) $response = strip_tags($response);
             $this->echo_logs($number, $url,  'Response Cut');
             if (empty($response)) {
                 if ($is_file_exist === null) $this->add_linktable_url_status($url, false); // 标记false，文件不存在，但url已处理
@@ -2076,6 +2108,104 @@ class Pget
         $this->error_count++;
 
         $this->echo_logs('FORCEECHO', $number, date('Y-m-d H:i:s'), $message . "\tError Counts: {$this->error_count}");
+    }
+
+    // 判断是否是文本
+    private function isTextContent($response)
+    {
+        if (empty($response)) {
+            return true;
+        }
+
+        // 只检查前1000个字符以提高性能
+        $sample = substr($response, 0, 1000);
+        $length = strlen($sample);
+
+        // 统计不可打印字符数量
+        $nonPrintableCount = 0;
+        for ($i = 0; $i < $length; $i++) {
+            $charCode = ord($sample[$i]);
+            // 检查是否为控制字符（除了常见的制表符、换行符、回车符）
+            if (($charCode >= 0 && $charCode <= 8) ||
+                ($charCode >= 11 && $charCode <= 12) ||
+                ($charCode >= 14 && $charCode <= 31)
+            ) {
+                $nonPrintableCount++;
+            }
+        }
+
+        // 如果不可打印字符比例超过10%，则认为是二进制内容
+        return ($nonPrintableCount / $length) <= 0.1;
+    }
+    /**********
+     * 去除每行头尾部空白
+     * 空白包含半角空格、制表符、全角空格
+     * 去除连续的空行
+     */
+    public function cleanString($str)
+    {
+        // 定义包含全角空格的正则表达式
+        $pattern = '/^[\s　]+|[\s　]+$/u';
+        $lines = explode("\n", $str);
+        $newLines = [];
+        foreach ($lines as $line) {
+            // 使用正则表达式去除空白字符
+            $trimmedLine = preg_replace($pattern, '', $line);
+            if (!empty($trimmedLine)) {
+                $newLines[] = $trimmedLine;
+            }
+        }
+        return implode("\n", $newLines);
+    }
+    /**********
+     * 去除HTML标签属性，不含 href 、 src 
+     */
+    public function removeAttributesEx($html)
+    {
+        // 使用正则表达式匹配 HTML 标签
+        return preg_replace_callback('/<(\w+)([^>]*?)>/i', function ($matches) {
+            $tag = $matches[1];
+            $attributes = $matches[2];
+            $newAttributes = '';
+            // 分离属性
+            if (!empty($attributes)) {
+                $attributePairs = preg_split('/\s+/', $attributes);
+                foreach ($attributePairs as $attributePair) {
+                    if (preg_match('/^(href|src)=["\']?[^"\']+["\']?/i', $attributePair)) {
+                        $newAttributes .= $attributePair . ' ';
+                    }
+                }
+            }
+            // 确保属性部分和标签名之间有空格
+            return '<' . $tag . ($newAttributes ? ' ' . rtrim($newAttributes) : '') . '>';
+        }, $html);
+    }
+    /**********
+     * 去除网页标签
+     * 支持跳过标签
+     */
+    public function custom_strip_tags($html, $allowed_tags = array())
+    {
+        if (empty($allowed_tags)) {
+            return preg_replace('/<[^>]*?>/', '', $html);
+        } else {
+            // 将允许的标签数组转换为可用于正则表达式的格式
+            $allowed_tags_regex = implode('|', array_map(function ($tag) {
+                return preg_quote($tag, '/');
+            }, $allowed_tags));
+            $pattern = '/<(?![\/]?(' . $allowed_tags_regex . ')\b)[^>]*>/i';
+            return preg_replace($pattern, '', $html);
+        }
+    }
+    /**********
+     * 去除 HTML 中的 script 和 style 代码 
+     * */
+    public function removeScriptAndStyle($html)
+    {
+        // 使用正则表达式移除 <script> 和 <style> 标签及其内容
+        $html = preg_replace('#<script.*?>.*?</script>#is', '', $html);
+        $html = preg_replace('#<style.*?>.*?</style>#is', '', $html);
+        return $html;
     }
 }
 
@@ -2172,6 +2302,7 @@ class ArraySharder
         // 你也可以输出 $this->shards 的数量
         echo "[DEBUG] 当前 shards 总数: " . $this->count() . "\n";
     }
+    // arraysharder end
 }
 // =================== 工具函数 ===================
 
@@ -2272,8 +2403,9 @@ function pget_shutdown_handler()
     // 使用配置中的目录前缀
     $dir_prefix = isset($pget) && isset($pget->cfg['--directory-prefix']) ? $pget->cfg['--directory-prefix'] : __DIR__;
     $log_file = $dir_prefix . '/pget_shutdown.log';
-    $url = $pget->cfg['--start-url'] ?? '';
+    $url = isset($pget) ? ($pget->cfg['--start-url'] ?? '') : '';
     $now = date('Y-m-d H:i:s');
+
     if ($error) {
         $type = $error['type'] ?? 0;
         $type_str = match ($type) {
@@ -2307,13 +2439,8 @@ function pget_shutdown_handler()
     // 利用析构函数来清理资源
     if (isset($pget)) {
         // 确保日志被记录和刷新
-        $pget->echo_logs($msg);
+        $pget->echo_logs('FORCEECHO', $msg);
         $pget->flush_log_buffer();
-        // 对于致命错误，显式调用析构函数确保资源释放
-        // 因为在致命错误情况下，PHP可能不会正常调用析构函数
-        if ($error) {
-            $pget->__destruct();
-        }
     }
 }
 
@@ -2326,7 +2453,7 @@ function pget_signal_handler($signal_type, $signal_name, $exit_code)
     // 使用配置中的目录前缀
     $dir_prefix = isset($pget) && isset($pget->cfg['--directory-prefix']) ? $pget->cfg['--directory-prefix'] : __DIR__;
     $log_file = $dir_prefix . '/pget_shutdown.log';
-    $url = $pget->cfg['--start-url'] ?? '';
+    $url = isset($pget) ? ($pget->cfg['--start-url'] ?? '') : '';
     $msg = "[SIGNAL] {$now} [{$signal_type}: {$signal_name}]\n";
     $msg .= "  起始URL: {$url}\n";
     $msg .= "  日志文件: {$log_file}\n";
@@ -2335,12 +2462,14 @@ function pget_signal_handler($signal_type, $signal_name, $exit_code)
     echo "\n========== 脚本被" . ($signal_name === 'SIGINT' ? '用户中断 (Ctrl+C)' : '外部终止 (SIGTERM)') . " ==========\n";
     echo $msg;
     file_put_contents($log_file, $msg, FILE_APPEND);
+
     // 处理资源清理
     if (isset($pget)) {
         // 确保日志被记录和刷新
-        $pget->echo_logs($msg);
+        $pget->echo_logs('FORCEECHO', $msg);
         $pget->flush_log_buffer();
     }
+
     // 信号处理后正常退出，PHP会自动调用析构函数
     exit($exit_code);
 }
