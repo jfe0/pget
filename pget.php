@@ -1301,9 +1301,9 @@ class Pget
         // 设置跟随重定向
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 1);
         // 设置超时时间为10秒
-        curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
         // 设置连接超时时间为10秒
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 15);
         // 设置支持gzip和deflate压缩
         curl_setopt($ch, CURLOPT_ENCODING, 'gzip,deflate');
         // user-agent处理

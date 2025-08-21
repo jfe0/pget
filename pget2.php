@@ -1466,8 +1466,8 @@ class Pget
             CURLOPT_URL => $url,
             CURLOPT_ENCODING => 'gzip, deflate',
             CURLOPT_RETURNTRANSFER => 1, // 要求返回结果
-            CURLOPT_CONNECTTIMEOUT => 5, //连接超时
-            CURLOPT_TIMEOUT => 5, // 超时
+            CURLOPT_CONNECTTIMEOUT => 15, //连接超时
+            CURLOPT_TIMEOUT => 30, // 超时
             CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_NONE, // 自动 http 协议
             CURLOPT_FOLLOWLOCATION => true, // 是否自动 301/302跳转
             CURLOPT_MAXREDIRS => 5,

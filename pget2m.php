@@ -1987,7 +1987,6 @@ class MultiCatcher
 {
     // 以下是需要配置的运行参数
     // 最大重试次数不需要配置，由主控重新将链接入栈即可
-    public $timeout = 5; //默认的超时
     public $concurrency = 25; //并发数量
     public $randuseragent = false; //是否自动更换UserAgent
     public $followlocation = false; //是否自动301/302跳转
@@ -2115,8 +2114,8 @@ class MultiCatcher
             CURLOPT_NOBODY => 0,
             CURLOPT_ENCODING => 'gzip, deflate',
             CURLOPT_RETURNTRANSFER => 1, // 要求返回结果
-            CURLOPT_CONNECTTIMEOUT => 5, //连接超时
-            CURLOPT_TIMEOUT => $this->timeout, // 超时
+            CURLOPT_CONNECTTIMEOUT => 15, //连接超时
+            CURLOPT_TIMEOUT => 30, // 超时
             CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_NONE, // 自动 http 协议
             CURLOPT_FOLLOWLOCATION => $this->followlocation, // 是否自动 301/302跳转
             CURLOPT_USERAGENT => $this->randuseragent ? $this->agents[rand(0, count($this->agents) - 1)] : $this->agents[0], // 是否随机取一个用户AGENT,
