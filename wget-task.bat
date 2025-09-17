@@ -17,14 +17,14 @@ for %%i in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
 echo %SCRIPT_PATH%
 echo %date% %time%
 
-REM 运行wget命令
-wget -nv -nc -r -p ^
+REM 运行wget命令（wget不支持正则表达式某些高级语法，例如(?:...)）
+wget.exe -nv -nc -r -p ^
 -e robots=off ^
 --adjust-extension ^
 --output-file=wget.log ^
 --no-check-certificate ^
 --user-agent="Mozilla/5.0 (compatible; Baiduspider/2.0; +http://www.baidu.com/search/spider.html)" ^
---reject-regex="\?|#|&|\.(?:rar|gz|zip|epub|txt|pdf|apk|deb|dmg|exe)$|\/users\/" ^
+--reject-regex="\?|#|&|\.(rar|gz|zip|epub|txt|pdf|apk|deb|dmg|exe)$" ^
 --wait=0.5 ^
 --base="https://www.a.com/" ^
 --referer="https://www.a.com/" ^

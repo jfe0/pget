@@ -26,7 +26,7 @@ $param_list = [
  * Author: icos
  * 
  * Usage examples:
- * php pget.php --recursive --wait=0.5 --reject="woff,jpg,png,webp" --accept="html,js,css" --reject-regex="\?|(?:\/down\/)" --sub-string="<p id=\"b\">,<p class=\"a b\">|</p>[,</p>]" https://domain/
+ * php pget.php --recursive --wait=0.5 --reject="woff,jpg,png,webp" --accept="html,js,css" --reject-regex="\?" --sub-string="<p id=\"b\">,<p class=\"a b\">|</p>[,</p>]" https://domain/
  * php pget.php https://domain/link
  * php pget.php --input-file="urls.txt"
  * 
@@ -74,7 +74,7 @@ $param_list = [
  * 作者：icos
  * 
  * 用法示例：
- * php pget.php --recursive --adjust-extension --restrict-file-names --no-check-certificate --tries=10 --wait=0.5 --save-cookies="cookie" --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0" --reject-regex="\?|#|&|(?:\.rar)|(?:\.zip)|(?:\.epub)|(?:\.txt)|(?:\.pdf)" --reject="woff,jpg,png,webp" --accept="html,js,css" --sub-string="<p id=\"b\">,<p class=\"a b\">|</p>,</p>" https://domain/
+ * php pget.php --recursive --adjust-extension --restrict-file-names --no-check-certificate --tries=10 --wait=0.5 --save-cookies="cookie" --reject-regex="\?|#|&" --sub-string="<p id=\"b\">,<p class=\"a\">|</p>,</p>" https://domain/
  * php pget.php https://domain/link
  * php pget.php --input-file="urls.txt"
  * 
@@ -1153,22 +1153,30 @@ class Pget
 
     /**
      * 生成本地保存路径
-     * @param url 传入链接或者parse_url解析后的数组
+     * @param url 传入链接
      * 目录名包含端口号，兼容Win/Linux，支持特殊字符转义
      */
     public function url_local_path($url, $dir_prefix): string
     {
-        if (empty($url)) {
-            return '';
-        }
-        $url_parsed = is_array($url) ? $url : parse_url($url);
+        if (empty($url)) return '';
+
+        // 移除URL中的井号部分
+        $url = strtok($url, '#');
+        // 解码，以防重复编码
+        $url = rawurldecode($url);
+
+        $url_parsed = parse_url($url);
+
+        $host = $url_parsed['host'] ?? '';
         $path = $url_parsed['path'] ?? '/';
-        if (!empty($this->cfg['--level'])) {
+        $query = empty($url_parsed['query']) ? '' : '?' . $url_parsed['query'];
+
+        // 限制目录深度
+        if ($this->cfg['--level']) {
             $trimmed = trim($path, '/');
             if ($trimmed !== '') {
                 $depth = substr_count($trimmed, '/');
                 if ($depth > $this->cfg['--level']) {
-                    $this->echo_logs($this->loop_count, $url, 'Max depth exceeded, skip.');
                     return '';
                 }
             }
@@ -1177,14 +1185,31 @@ class Pget
         if (str_ends_with($path, '/')) {
             $path .= 'index.html';
         }
-        $decodedPath = rawurldecode($path);
-        $query = empty($url_parsed['query']) ? '' : '?' . str_replace('/', '%2F', rawurldecode($url_parsed['query']));
-        $file_path = $decodedPath . $query;
-        $file_path = ltrim($file_path, '/');
-        if (!empty($this->cfg['--restrict-file-names'])) {
-            $file_path = rawurlencodex($file_path);
+
+        if ($this->cfg['--restrict-file-names']) { // 编码路径
+
+            // 使用不会被rawurlencode编码的安全字符串作为临时分隔符
+            $tempDirSep = '__DIR_SEP__';  // 目录分隔符临时标记
+            $tempDotSep = '__DOT_SEP__';  // 扩展名分隔符临时标记
+
+            $pathinfo = pathinfo($path);
+            $filename = empty($pathinfo['filename']) ? '' : $tempDirSep . $pathinfo['filename'];
+            $ext = empty($pathinfo['extension']) ? '' : $tempDotSep . $pathinfo['extension'];
+            $dirname = empty($pathinfo['dirname']) || ($pathinfo['dirname'] === '\\') ? '' : str_replace('/', $tempDirSep, $pathinfo['dirname']);
+
+            $file_path = $dirname . $filename . $ext . $query;
+
+            $file_path = rawurlencode($file_path);
+
+            // 还原临时分隔符
+            $file_path = str_replace([$tempDirSep, $tempDotSep], ['/', '.'], $file_path);
+        } else { // 保持原路径
+            $file_path = $path . $query;
         }
-        static $invalidChars = [
+        $file_path = ltrim($file_path, '/');
+
+        // Windows和Linux系统不允许出现在本地路径中的字符
+        $invalidChars = [
             '?' => '%3F',
             '*' => '%2A',
             ':' => '%3A',
@@ -1197,13 +1222,14 @@ class Pget
             $invalidChars['/'] = DIRECTORY_SEPARATOR;
         }
         $file_path = strtr($file_path, $invalidChars);
-        return
-            $dir_prefix .
-            DIRECTORY_SEPARATOR .
-            $url_parsed['host'] .
+
+        if (DIRECTORY_SEPARATOR !== '/') {
+            $file_path = str_replace('/', DIRECTORY_SEPARATOR, $file_path);
+        }
+
+        return $dir_prefix . DIRECTORY_SEPARATOR . $host .
             (empty($url_parsed['port']) ? '' : '%3A' . $url_parsed['port']) .
-            DIRECTORY_SEPARATOR .
-            $file_path;
+            DIRECTORY_SEPARATOR . $file_path;
     }
 
     /**
@@ -1441,7 +1467,7 @@ class Pget
             return false;
         }
         // 将秒转换为微秒
-        $microseconds = (int)($seconds * 1000000);
+        static $microseconds = (int)($seconds * 1000000);
 
         // 如果上次请求的时间距离当前时间的差值已经大于--wait的值，那就不要休眠了
         if ($this->last_request_time && (microtime(true) - $this->last_request_time) > $microseconds) {
