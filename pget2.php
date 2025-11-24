@@ -12,7 +12,7 @@ $param_list = [
     '--tries=100',
     '--pause-time=600',
     '--pause-tries=600',
-    '--pause-period=600',
+    '--pause-period=60',
     '--output-file=pget2.log',
     '--sub-string=<html|</html>',
     '--delete-string=<head>|</head>',
@@ -1296,14 +1296,18 @@ class Pget
             // 若配置了输出到文件，则写入缓存
             if ($this->cfg['--output-file']) {
                 $this->log_buffer[] = $log_message;
+                // 缓冲超过阈值时自动落盘，防止短时间内占满内存
+                if ($flushlog || count($this->log_buffer) > 500) {
+                    $this->flush_log_buffer();
+                }
             } else {
                 // 否则输出到控制台
                 echo $log_message;
             }
-        }
-        /* if ($flushlog) {
+        } elseif ($flushlog) {
+            // 即便不输出，也在FORCEECHO时尝试flush
             $this->flush_log_buffer();
-        } */
+        }
     }
     /**
      * 日志缓存写入文件
@@ -1520,29 +1524,24 @@ class Pget
      */
     public function wait($seconds)
     {
-        // 若等待时间小于等于0，则返回
-        if ($seconds <= 0) {
+        // 参数校验：必须是数字且大于0
+        if (!is_numeric($seconds) || $seconds <= 0) {
             return false;
         }
-        // 在等待前刷新缓存（保证暂停前的数据落地）
-        $this->flush_log_buffer();
-        if ($this->cfg['--store-database'] && isset($this->pdo)) {
-            try {
-                $this->db_flush_db_cache();
-            } catch (\Throwable $e) { /* 忽略写入错误 */
-            }
-        }
-        // 根据等待时间的类型进行处理
-        if (is_int($seconds) || $seconds == (int)$seconds) {
-            // 若等待时间为整数，则使用sleep函数等待
-            sleep($seconds);
-        } else {
-            // 将秒转换为微秒
-            static $microseconds = (int)($seconds * 1000000);
 
-            // 否则，使用usleep函数等待
-            usleep($microseconds);
+        $secs = (float)$seconds;
+
+        // 如果是整数秒，使用 sleep
+        if (floor($secs) == $secs) {
+            sleep((int)$secs);
+            return true;
         }
+
+        // 否则计算微秒并确保至少为1（避免 usleep(0) 导致忙循环）
+        $microseconds = (int)round($secs * 1000000);
+        if ($microseconds < 1) $microseconds = 1;
+        usleep($microseconds);
+        return true;
     }
     /**
      * 根据content-type获取扩展名
@@ -1715,7 +1714,15 @@ class Pget
             $now = time();
             if ($now - $last_period_pause_time > $this->cfg['--pause-period']) {
                 $this->echo_logs('FORCEECHO', "Periodic pause for {$this->cfg['--pause-time']}s (period mode)");
-                $this->pause($this->cfg['--pause-time']);
+                // 在等待前刷新缓存（保证暂停前的数据落地）
+                $this->flush_log_buffer();
+                if ($this->cfg['--store-database'] && isset($this->pdo)) {
+                    try {
+                        $this->db_flush_db_cache();
+                    } catch (\Throwable $e) { /* 忽略写入错误 */
+                    }
+                }
+                sleep($this->cfg['--pause-time']);
                 $last_period_pause_time = $now;
             }
         }
@@ -1725,7 +1732,15 @@ class Pget
                 // 最大暂停次数逻辑
                 if ($pause_tries_count < $this->cfg['--pause-tries'] && $this->cfg['--pause-time'] > 0) {
                     $this->echo_logs('FORCEECHO', "Error limit reached, pausing for {$this->cfg['--pause-time']}s (pause #" . ($pause_tries_count + 1) . ")");
-                    $this->pause($this->cfg['--pause-time']);
+                    // 在等待前刷新缓存（保证暂停前的数据落地）
+                    $this->flush_log_buffer();
+                    if ($this->cfg['--store-database'] && isset($this->pdo)) {
+                        try {
+                            $this->db_flush_db_cache();
+                        } catch (\Throwable $e) { /* 忽略写入错误 */
+                        }
+                    }
+                    sleep($this->cfg['--pause-time']);
                     $pause_tries_count++;
                     $this->error_count = 0; // 归零错误次数
                 } else {
