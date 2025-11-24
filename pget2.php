@@ -10,9 +10,9 @@ $param_list = [
     '--wait=1',
     '--max-threads=10',
     '--tries=100',
-    '--pause-time=1000',
-    '--pause-tries=1000',
-    '--pause-period=1000',
+    '--pause-time=600',
+    '--pause-tries=600',
+    '--pause-period=600',
     '--output-file=pget2.log',
     '--sub-string=<html|</html>',
     '--delete-string=<head>|</head>',
@@ -1524,7 +1524,14 @@ class Pget
         if ($seconds <= 0) {
             return false;
         }
-
+        // 在等待前刷新缓存（保证暂停前的数据落地）
+        $this->flush_log_buffer();
+        if ($this->cfg['--store-database'] && isset($this->pdo)) {
+            try {
+                $this->db_flush_db_cache();
+            } catch (\Throwable $e) { /* 忽略写入错误 */
+            }
+        }
         // 根据等待时间的类型进行处理
         if (is_int($seconds) || $seconds == (int)$seconds) {
             // 若等待时间为整数，则使用sleep函数等待
@@ -1708,7 +1715,7 @@ class Pget
             $now = time();
             if ($now - $last_period_pause_time > $this->cfg['--pause-period']) {
                 $this->echo_logs('FORCEECHO', "Periodic pause for {$this->cfg['--pause-time']}s (period mode)");
-                sleep($this->cfg['--pause-time']);
+                $this->pause($this->cfg['--pause-time']);
                 $last_period_pause_time = $now;
             }
         }
@@ -1718,7 +1725,7 @@ class Pget
                 // 最大暂停次数逻辑
                 if ($pause_tries_count < $this->cfg['--pause-tries'] && $this->cfg['--pause-time'] > 0) {
                     $this->echo_logs('FORCEECHO', "Error limit reached, pausing for {$this->cfg['--pause-time']}s (pause #" . ($pause_tries_count + 1) . ")");
-                    sleep($this->cfg['--pause-time']);
+                    $this->pause($this->cfg['--pause-time']);
                     $pause_tries_count++;
                     $this->error_count = 0; // 归零错误次数
                 } else {
