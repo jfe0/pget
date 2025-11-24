@@ -6,7 +6,7 @@ $param_list = [
     '--start-url=http://img.ccbbp.com/',
     '--directory-prefix=C:\\workspace\\crawler',
     '--reject-regex=\?|#|&|\.(?:rar|gz|zip|epub|txt|pdf|apk|deb|dmg|exe)$',
-    '--output-document=test.html',
+    '--output-document=output.html',
     '--wait=1',
     '--max-threads=10',
     '--tries=100',
@@ -17,6 +17,7 @@ $param_list = [
     '--sub-string=<html|</html>',
     '--delete-string=<head>|</head>',
     // '--store-database',
+    '--utf-8',
     '--strip-ss',
     '--strip-blank',
     '--recursive',
@@ -620,8 +621,13 @@ class Pget
             $this->echo_logs('FORCEECHO', "URL : {$url}\tError Code : {$http_info['curl_errno']}\tError Message : {$http_info['curl_error']}\tHttp Code : {$http_info['http_code']}");
             return false;
         }
+
+        // 若设置了转换为UTF-8编码，则进行编码转换
+        if ($this->cfg['--utf-8']) {
+            $response = $this->mb_encode($response);
+        }
         // 正文处理方法
-        // $response = $this->content_filter_string($url, $response, 1, $http_info);
+        $response = $this->content_filter_string($url, $response, 1, $http_info);
 
         // 处理下载结果
         if (empty($this->cfg['--output-document'])) {
@@ -2103,10 +2109,6 @@ class Pget
         $sub_string_rules = $this->config->sub_string_rules;
         $delete_string_rules = $this->config->delete_string_rules;
 
-        // 若设置了转换为UTF-8编码，则进行编码转换
-        if ($this->cfg['--utf-8']) {
-            $response = $this->mb_encode($response);
-        }
         // 若设置了内容截取，则进行内容截取
         if (!empty($this->cfg['--sub-string']) && str_contains($http_info['content_type'], 'text/html')) {
             $response = $this->sub_content_all($response, $sub_string_rules);
@@ -2172,6 +2174,10 @@ class Pget
             $this->echo_logs($number, $url,  'Links Add');
         }
 
+        // 若设置了转换为UTF-8编码，则进行编码转换
+        if ($this->cfg['--utf-8']) {
+            $response = $this->mb_encode($response);
+        }
         // 正文处理方法
         $response = $this->content_filter_string($url, $response, $number, $http_info);
 
@@ -2273,15 +2279,20 @@ class Pget
             return null;
         }
 
-        // 获取标题
-        $html_title = $this->ssub_content($response, '<title>', '</title>');
-
         if ($this->cfg['--mirror'] || $this->cfg['--recursive']) {
             $this->db_store_page_links($response, $url);
         }
         if ($this->cfg['--page-requisites']) {
             $this->db_store_page_requisites($response, $url);
         }
+
+        // 若设置了转换为UTF-8编码，则进行编码转换
+        if ($this->cfg['--utf-8']) {
+            $response = $this->mb_encode($response);
+        }
+
+        // 获取标题
+        $html_title = $this->ssub_content($response, '<title>', '</title>');
 
         // 正文处理方法
         $response = $this->content_filter_string($url, $response, $number, $http_info);
